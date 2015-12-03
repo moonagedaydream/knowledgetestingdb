@@ -241,7 +241,8 @@ CREATE PROCEDURE checkUserSubtest @usubtest_id UNIQUEIDENTIFIER
       DECLARE @score FLOAT = @maxscores / (SELECT COUNT(*) FROM Subtests, Questions, User_subtests WHERE  usubtest_id = @usubtest_id
 						AND User_subtests.subtest_id = Subtests.subtest_id AND Questions.subtest_id = Subtests.subtest_id);
       UPDATE User_answers SET answer_score = @score
-      WHERE answer_score = 1;
+	WHERE usubtest_id = @usubtest_id AND answer_score = 1;
+	END
     END
     
     DECLARE @userscores INT = (SELECT SUM(answer_score) FROM User_answers WHERE usubtest_id = @usubtest_id);
@@ -272,6 +273,20 @@ AS
 		DECLARE @excellent_subtests INT = (SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id AND usubtest_mark = 5);
 		DECLARE @good_subtests INT = (SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id AND usubtest_mark = 4);
 		DECLARE @acceptable_subtests INT = (SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id AND usubtest_mark = 3);
+		DECLARE @notpassed_subtests INT = (SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id AND usubtest_mark = 2);
+
+		IF (@excellent_subtests + @good_subtests + @acceptable_subtests + @notpassed_subtests <= 0 )
+		BEGIN
+			RETURN
+		END
+
+		IF (@notpassed_subtests > 0) 
+		BEGIN
+			UPDATE User_tests SET utest_mark = 2
+					WHERE utest_id = @utest_id;
+			RETURN
+		END
+		
 		IF ((SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id) = 7)
 		BEGIN 
 			IF (@excellent_subtests > 5 AND @acceptable_subtests = 0)
