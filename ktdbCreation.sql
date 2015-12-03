@@ -96,10 +96,14 @@ user_password VARCHAR(300) NOT NULL,
 usertype_id INT NOT NULL FOREIGN KEY REFERENCES Usertypes(usertype_id)
 );
 
-CREATE TABLE Test_evaluation_types
+CREATE TABLE Test_evaluation_levels
 (
-type_id INT IDENTITY(1,1) PRIMARY KEY,
-type_name VARCHAR(50) NOT NULL
+level_id INT IDENTITY(1,1) PRIMARY KEY,
+level_name VARCHAR(50) NOT NULL,
+scores_threshold INT NOT NULL,
+acceptable_threshold INT,
+good_threshold INT,
+excellent_threshold INT
 );
 
 CREATE TABLE User_tests 
