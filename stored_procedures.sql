@@ -157,13 +157,13 @@ GO
 IF OBJECTPROPERTY(object_id('dbo.addUserTest'), N'IsProcedure') = 1
   DROP PROCEDURE [dbo].[addUserTest]
 GO
-CREATE PROCEDURE addUserTest @user_id UNIQUEIDENTIFIER, @test_id UNIQUEIDENTIFIER, @evaluation_type VARCHAR(50),
+CREATE PROCEDURE addUserTest @user_id UNIQUEIDENTIFIER, @test_id UNIQUEIDENTIFIER, @evaluation_level VARCHAR(50),
 								@utest_id UNIQUEIDENTIFIER OUTPUT
   AS
   SET @utest_id = NEWID();
-  DECLARE @type_id INT = (SELECT TOP 1 type_id FROM Test_evaluation_types WHERE type_name = @evaluation_type);
-  INSERT INTO User_tests(utest_id, user_id, test_id, evaluation_type, test_senddate) VALUES
-  	(@utest_id, @user_id, @test_id, @type_id, GETDATE())
+  DECLARE @level_id INT = (SELECT TOP 1 level_id FROM Test_evaluation_levels WHERE level_name = @evaluation_level);
+  INSERT INTO User_tests(utest_id, user_id, test_id, evaluation_level, test_senddate) VALUES
+  	(@utest_id, @user_id, @test_id, @level_id, GETDATE())
 RETURN
 GO
 
@@ -177,6 +177,47 @@ CREATE PROCEDURE checkUserAnswer @uanswer_id UNIQUEIDENTIFIER, @answer_score INT
   AS
   UPDATE User_answers SET answer_score = @answer_score
   WHERE uanswer_id = @uanswer_id
+GO
+
+--//-------------------------------------------------------
+--//---сверяемся-с-уровнем-и-выставляем-оценку-------------
+--//-------------------------------------------------------
+
+IF OBJECTPROPERTY(object_id('dbo.percentToMark'), N'IsProcedure') = 1
+	DROP PROCEDURE [dbo].[percentToMark]
+GO
+CREATE PROCEDURE percentToMark @percents INT, @level_id INT, @mark INT OUTPUT
+AS
+ DECLARE @level VARCHAR(50) = (SELECT level_name FROM Test_evaluation_levels WHERE level_id = @level_id);
+ DECLARE @threshold INT = (SELECT scores_threshold FROM Test_evaluation_levels WHERE level_id = @level_id);
+ IF (@threshold IS NOT NULL)
+ BEGIN
+  IF (@percents < @threshold)
+  BEGIN
+   SET @mark = 2;
+   RETURN
+  END
+ END
+ SET @threshold = (SELECT excellent_threshold FROM Test_evaluation_levels WHERE level_id = @level_id);
+ IF (@threshold IS NOT NULL)
+ BEGIN
+  IF (@percents >= @threshold)
+  BEGIN
+   SET @mark = 5;
+   RETURN
+  END
+ END
+ SET @threshold = (SELECT good_threshold FROM Test_evaluation_levels WHERE level_id = @level_id);
+ IF (@threshold IS NOT NULL)
+ BEGIN
+  IF (@percents >= @threshold)
+  BEGIN
+   SET @mark = 4;
+   RETURN 
+  END
+ END
+ SET @mark = 3;
+ RETURN
 GO
 
 --//-------------------------------------------------------
@@ -208,25 +249,64 @@ CREATE PROCEDURE checkUserSubtest @usubtest_id UNIQUEIDENTIFIER
 
     UPDATE User_subtests SET usubtest_scores = @userscores
       WHERE usubtest_id = @usubtest_id;
-
-    IF (@percents >= 85) 
-    BEGIN
-      UPDATE User_subtests SET usubtest_mark = 5
-        WHERE usubtest_id = @usubtest_id;
-    END
-    ELSE IF (@percents >= 65) 
-    BEGIN
-      UPDATE User_subtests SET usubtest_mark = 4
-        WHERE usubtest_id = @usubtest_id;
-    END
-    ELSE IF (@percents >= 50) 
-    BEGIN
-      UPDATE User_subtests SET usubtest_mark = 3
-        WHERE usubtest_id = @usubtest_id;
-    END
-    ELSE BEGIN
-      UPDATE User_subtests SET usubtest_mark = 2
-        WHERE usubtest_id = @usubtest_id;
-    END
+    DECLARE @level_id INT = (SELECT level_id FROM Test_evaluation_levels, User_tests, User_subtests 
+                             WHERE usubtest_id = @usubtest_id AND User_tests.utest_id = User_subtests.utest_id
+                             AND evaluation_level = level_id);
+    DECLARE @mark INT;
+    EXEC percentToMark @percents, @level_id, @mark OUTPUT;
+    UPDATE User_subtests SET usubtest_mark = @mark
+     WHERE usubtest_id = @usubtest_id;
   END
+GO
+
+--//-------------------------------------------------------
+--//---проверяем-тест-в-целом------------------------------
+--//-------------------------------------------------------
+IF OBJECTPROPERTY(object_id('dbo.checkUserTest'), N'IsProcedure') = 1
+	DROP PROCEDURE [dbo].[checkUserTest]
+GO
+CREATE PROCEDURE checkUserTest @utest_id UNIQUEIDENTIFIER
+AS
+	IF (NOT EXISTS (SELECT * FROM User_subtests WHERE utest_id = @utest_id AND usubtest_mark = NULL))
+	BEGIN
+		DECLARE @excellent_subtests INT = (SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id AND usubtest_mark = 5);
+		DECLARE @good_subtests INT = (SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id AND usubtest_mark = 4);
+		DECLARE @acceptable_subtests INT = (SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id AND usubtest_mark = 3);
+		IF ((SELECT COUNT(*) FROM User_subtests WHERE utest_id = @utest_id) = 7)
+		BEGIN 
+			IF (@excellent_subtests > 5 AND @acceptable_subtests = 0)
+			BEGIN
+				UPDATE User_tests SET utest_mark = 5
+					WHERE utest_id = @utest_id;
+				RETURN
+			END
+		END
+		DECLARE @mark INT = (@excellent_subtests * 5 + @good_subtests * 4 + @acceptable_subtests * 3) 
+								/ (@excellent_subtests + @good_subtests + @acceptable_subtests);
+		UPDATE User_tests SET utest_mark = @mark
+					WHERE utest_id = @utest_id;
+		RETURN
+	END
+GO
+
+--//-------------------------------------------------------
+--//---очистка-бд-от-устаревших-результатов----------------
+--//-------------------------------------------------------
+IF OBJECTPROPERTY(object_id('dbo.cleanUpKTDBresults'), N'IsProcedure') = 1
+	DROP PROCEDURE [dbo].[cleanUpKTDBresults]
+GO
+CREATE PROCEDURE cleanUpKTDBresults @date_threshold DATETIME = NULL
+AS
+	SET @date_threshold = ISNULL(@date_threshold,DATEADD(MONTH,-2, GETDATE()));
+	DELETE User_answers FROM User_answers 
+		INNER JOIN User_subtests
+			ON User_answers.usubtest_id = User_subtests.usubtest_id
+		INNER JOIN User_tests
+			ON User_subtests.utest_id = User_tests.utest_id
+		WHERE test_senddate < @date_threshold;
+
+	DELETE User_subtests FROM User_subtests 
+		INNER JOIN User_tests
+			ON User_subtests.utest_id = User_tests.utest_id
+		WHERE test_senddate < @date_threshold;
 GO
